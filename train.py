@@ -16,6 +16,23 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def get_device() -> torch.device:
+    """
+    Resolve the training device and emit a clear log.
+
+    GPU usage can be disabled if CUDA_VISIBLE_DEVICES hides GPUs or if PyTorch
+    is installed without CUDA support. We print the selected device so users
+    can verify that training is actually using the GPU.
+    """
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
+        return device
+    device = torch.device("cpu")
+    print("CUDA not available; using CPU. Check CUDA_VISIBLE_DEVICES and your PyTorch build.")
+    return device
+
+
 class SharedMLP(nn.Module):
     """
     Shared MLP implemented with 1x1 convolutions.
@@ -153,7 +170,7 @@ def train():
     print("Training started with random seed: {}".format(111))
     print("Batch started with random seed: {}".format(111))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     # Generate synthetic training data using the original LoaderFish pipeline.
     dataset = LoaderFish.PointRegDataset(
@@ -238,7 +255,7 @@ def train():
 
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6"  # change it to the number of gpu.
+    # Optionally set CUDA_VISIBLE_DEVICES in your shell to select a specific GPU.
     train_num = 20000  # number of synthesized training pairs
     deformation_list = [0.4]
     batSize = 8

@@ -97,7 +97,12 @@ def load_latest_checkpoint(weight_dir: str) -> str | None:
 
 def test(weight_path: str, deform_level: float, test_num: int = 200):
     """Run evaluation on synthetic data and return source/target/predicted sets."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
+    else:
+        device = torch.device("cpu")
+        print("CUDA not available; using CPU. Check CUDA_VISIBLE_DEVICES and your PyTorch build.")
 
     model = PointRegressor().to(device)
     checkpoint = torch.load(weight_path, map_location=device)
@@ -140,7 +145,7 @@ def test(weight_path: str, deform_level: float, test_num: int = 200):
 
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    # Optionally set CUDA_VISIBLE_DEVICES in your shell to select a specific GPU.
 
     weight_dirs = sorted(glob.glob("./UnSup-fish/*"))
     if not weight_dirs:
