@@ -17,12 +17,22 @@ import torch
 import geotnf.point_tnf
 from scipy.spatial.distance import squareform,pdist
 
-def Tps_trans(Y,theta):
-    YY=np.transpose(Y,[0,2,1])
-    TT=torch.Tensor(theta.astype(np.float32))
-    YY=torch.Tensor(YY.astype(np.float32))
-    a=geotnf.point_tnf.PointTnf(use_cuda=True)
-    aa=a.tpsPointTnf(TT,YY).cpu().numpy()
+def Tps_trans(Y, theta):
+    """
+    Apply a TPS transform to a batch of point sets.
+
+    This now respects the runtime CUDA availability instead of forcing CUDA,
+    which prevents crashes on CPU-only machines.
+    """
+    YY = np.transpose(Y, [0, 2, 1])
+    TT = torch.Tensor(theta.astype(np.float32))
+    YY = torch.Tensor(YY.astype(np.float32))
+    use_cuda = torch.cuda.is_available()
+    a = geotnf.point_tnf.PointTnf(use_cuda=use_cuda)
+    if use_cuda:
+        TT = TT.cuda()
+        YY = YY.cuda()
+    aa = a.tpsPointTnf(TT, YY).cpu().numpy()
     return aa
 
 
