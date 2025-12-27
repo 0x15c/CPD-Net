@@ -70,113 +70,72 @@ def vis_Bat(xx, yy, yyp, name):
         plt.scatter(x[:20, 0], x[:20, 1], label="source", s=5, c="r")
         plt.scatter(yp[:20, 0], yp[:20, 1], label="transformed", s=5, c="r")
         for ii in range(20):
-            plt.arrow(
-                x[ii, 0],
-                x[ii, 1],
-                (yp[ii, 0] - x[ii, 0]),
-                (yp[ii, 1] - x[ii, 1]),
-                head_width=0.04,
-                head_length=0.04,
-                fc="k",
-                ec="k",
-            )
+            plt.arrow(x[ii,0],x[ii,1],(yp[ii,0]-x[ii,0]),(yp[ii,1]-x[ii,1]), head_width=0.04, head_length=0.04, fc='k', ec='k')
+        
+#         plt.ylim(-3.5, 3.5)
+#         plt.xlim(-3.5, 3.5)
+        ax.axis('off')
+        
+#     plt.show()
+    plt.savefig(name,transparent=True)
+    plt.close('all')
+    
+    
+os.environ['CUDA_VISIBLE_DEVICES']="1"
 
-        ax.axis("off")
+DaTf=sorted(glob.glob("./Def_train_*.*_20000.tfrecords"))[:8]
+Weig=sorted(glob.glob("./UnSup-fish/*"))
 
-    plt.savefig(name, transparent=True)
-    plt.close("all")
+print("Data for training: ",DaTf)
+print("Weight is loaded from: ", Weig)
 
+Def_lv=[]
+Bef_tr=[]
+Aft_tr=[]
+Bef_te=[]
+Aft_te=[]
 
-def load_latest_checkpoint(weight_dir: str) -> str | None:
-    """Return the most recent PyTorch checkpoint in a directory, if any."""
-    checkpoints = sorted(glob.glob(os.path.join(weight_dir, "model_step_*.pt")))
-    if not checkpoints:
-        return None
-    return checkpoints[-1]
+for i in range(len(Weig)):
+    
+    def_level=float(Weig[i].split("Def_")[-1].split("_")[0])
+    print("deformation level : ", def_level)
+    tr_d=DaTf[i]
+    wt=Weig[i]
 
+    Def_lv.append(def_level)
+    
+    test_num=200
+    a=LoaderFish.PointRegDataset(total_data=test_num, 
+                  deform_level=def_level,
+                  noise_ratio=0, 
+                  outlier_ratio=0, 
+                  outlier_s=False,
+                    outlier_t=False, 
+                    noise_s=False, 
+                    noise_t=False,
+                  missing_points=0,
+                  miss_source=False,
+                    miss_targ=False)
 
-def test(weight_path: str, deform_level: float, test_num: int = 200):
-    """Run evaluation on synthetic data and return source/target/predicted sets."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
-    else:
-        device = torch.device("cpu")
-        print("CUDA not available; using CPU. Check CUDA_VISIBLE_DEVICES and your PyTorch build.")
+    try:
+        os.remove("temp_test_1.tfrecords")
+    except:
+        print("fine, you don't have such files")
+    write_to_tfrecords({"source":np.asanyarray([i.T for i in a.target_list])[np.random.choice(range(test_num),test_num)],
+                        "target":np.asanyarray([i.T for i in a.target_list])},"temp_test_1.tfrecords")
 
-    model = PointRegressor().to(device)
-    checkpoint = torch.load(weight_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval()
-
-    dataset = LoaderFish.PointRegDataset(
-        total_data=test_num,
-        deform_level=deform_level,
-        noise_ratio=0,
-        outlier_ratio=0,
-        outlier_s=False,
-        outlier_t=False,
-        noise_s=False,
-        noise_t=False,
-        missing_points=0,
-        miss_source=False,
-        miss_targ=False,
-        clas=1,
-    )
-
-    # Use the same random pairing logic as training for evaluation.
-    target_list = [_ensure_point_shape(item) for item in dataset.target_list]
-    sources = np.stack(target_list, axis=0)
-    targets = np.stack(target_list, axis=0)
-
-    # Convert to torch tensors for inference.
-    source_tensor = torch.tensor(sources, dtype=torch.float32, device=device)
-    target_tensor = torch.tensor(targets, dtype=torch.float32, device=device)
-
-    with torch.no_grad():
-        displacement = model(source_tensor, target_tensor)
-        pred = source_tensor + displacement
-
-    return (
-        sources,
-        targets,
-        pred.cpu().numpy(),
-    )
-
-
-if __name__ == "__main__":
-    # Optionally set CUDA_VISIBLE_DEVICES in your shell to select a specific GPU.
-
-    weight_dirs = sorted(glob.glob("./UnSup-fish/*"))
-    if not weight_dirs:
-        raise RuntimeError("No weight directories found under ./UnSup-fish")
-
-    print("Weight directories found:", weight_dirs)
-
-    Bef_te = []
-    Aft_te = []
-
-    for weight_dir in weight_dirs:
-        def_level = float(weight_dir.split("Def_")[-1].split("_")[0])
-        checkpoint_path = load_latest_checkpoint(weight_dir)
-        if checkpoint_path is None:
-            print(f"No PyTorch checkpoints found in {weight_dir}, skipping.")
-            continue
-
-        print("deformation level:", def_level)
-        print("Weight is loaded from:", checkpoint_path)
-
-        S, T, TS = test(checkpoint_path, def_level, test_num=200)
-
-        org = chamfer_loss_np(T, S)
-        aft = chamfer_loss_np(T, TS)
-        Bef_te.append([np.mean(org), np.std(org)])
-        Aft_te.append([np.mean(aft), np.std(aft)])
-
-        if not os.path.exists("result_visuliation"):
-            os.makedirs("result_visuliation")
-        vis_Bat(S, T, TS, "result_visuliation/test.png")
-        print("#####################################################")
-
-    print("C.D. for Inputs (mean+-std):", Bef_te)
-    print("C.D. for Outputs (mean+-std):", Aft_te)
+    S,T,TS=test("temp_test_1.tfrecords",wt+"/", lll=2)
+    S=np.asanyarray(S).reshape(-1,91,2)
+    T=np.asanyarray(T).reshape(-1,91,2)
+    TS=np.asanyarray(TS).reshape(-1,91,2)
+    org=chamfer_loss_np(T,S)
+    aft=chamfer_loss_np(T,TS)
+    Bef_te.append([np.mean(org), np.std(org)])
+    Aft_te.append([np.mean(aft),np.std(aft)])
+    if not os.path.exists("result_visuliation"):
+        os.makedirs("result_visuliation")
+    vis_Bat(S,T,TS,"result_visuliation/test.png")
+    print("#####################################################")
+    
+print("C.D. for Inputs (mean+-std): ", Bef_te)
+print("C.D. for Outputs (mean+-std): ", Aft_te)
