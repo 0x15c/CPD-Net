@@ -5,7 +5,7 @@ import matplotlib.pylab as plt
 import torch
 from torch.utils.data import DataLoader
 import LoaderFish
-from train import PointRegressor, chamfer_loss
+from model import PointRegressor, chamfer_loss
 
 
 def _ensure_point_shape(points: np.ndarray) -> np.ndarray:
