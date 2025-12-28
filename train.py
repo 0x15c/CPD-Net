@@ -1,256 +1,283 @@
-import torch
-import LoaderFish
 import os
-import sys
-os.environ['CUDA_DEVICE_ORDER']="PCI_BUS_ID"
+import glob
+import random
 import numpy as np
-import matplotlib.pylab as plt
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-import torch.optim as optim
-import torch.backends.cudnn as cudnn
-import geotnf.point_tnf
-import numpy as np
-import sugartensor as tf
-import os
-import tqdm
+from torch.utils.data import Dataset, DataLoader
+import LoaderFish
 
-######################################################
-def write_to_tfrecords(dataMat,tfFileDirName):
-    """
-    example:
-    write_to_tfrecords(dictionary{'x':np.array,...},'./Data/digits.tfrecords') Needs to remember the dimension and name of the dictionary data.
-    return: tfrecords saved in given tfFileDirName
-    """
-    varNames=[i for i in list(dataMat.keys())]
-    
-    tmpData={}
-    tmpShape={}
-    
-    for i in varNames:
-        tmpData[i]=dataMat[i]
-        tmpShape[i]=dataMat[i].shape
-  
-    ####Check shape and Nan############
-    if (len(set([tmpShape[i][0] for i in tmpShape.keys()]))!=1) or \
-    (np.sum([np.isnan(tmpData[i]).sum() for i in tmpData.keys()])!=0):
-        print("Unbalance Label or NaN in Data")
-        return
-    ###################################
-    writer = tf.python_io.TFRecordWriter(tfFileDirName)
-    for i in range(len(tmpData[varNames[0]])):
-        tmpFeature={}
-        for ii in varNames:
-            tmp=np.asarray(tmpData[ii][i], dtype=np.float32).tobytes()
-            
-            tmpFeature[ii]=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tmp]))
-            
-        example = tf.train.Example(features=tf.train.Features(feature=tmpFeature))    
-        writer.write(example.SerializeToString())
-    writer.close()  
-    print("writing successfully in your dir:{}".format(tfFileDirName))
-    
-    
-def read_from_tfrecords(tfFileDirName,varNames,sizeBatch,shape,shuffle=True,rs=888):
-    """
-    example:
-    read_from_tfrecords('./Data/digits.tfrecords',['x','y'],32,[[28,28],[1]])
-    
-    return: list of tensors. (this function should be only used in tensorflow codes)
-    """
-    varNames=list(varNames)
-    tmp=[np.asarray(i,dtype=np.int32) for i in shape]
-    shape=[]
-    for i in tmp:
-        if np.sum(np.shape(i))>1:
-            shape.append(list(i))
-        else:
-            shape.append([int(i)])
-    
-    filename_queue = tf.train.string_input_producer([tfFileDirName])
-    reader = tf.TFRecordReader()
-    _, serialized_example = reader.read(filename_queue)
-    tmpFeatures={}
-    for ii in varNames:
-        tmpFeatures[ii]=tf.FixedLenFeature([], tf.string)
-    tmpFeatures = tf.parse_single_example(serialized_example,
-                                       features=tmpFeatures)  
-    tmpVar=[]
-    for i in range(len(varNames)):
-        ii=varNames[i]
-        tmp=tf.decode_raw(tmpFeatures[ii], tf.float32)
-        tmp=tf.reshape(tmp, shape=list(shape[i]))
-        tmpVar.append(tmp)
-        
-    if shuffle:
-        tmpBatch=tf.train.shuffle_batch(tmpVar, sizeBatch, capacity=sizeBatch * 128,
-                              min_after_dequeue=sizeBatch * 32, name=None, seed=rs)
-    else:
-        tmpBatch=tf.train.batch(tmpVar, sizeBatch, capacity=sizeBatch * 128, name=None)
-        
-    return tmpBatch    
 
-def pairwise_dist(xt,y_p):
-    a=xt.shape[1]
-    b=y_p.shape[1]
-    dist=tf.tile(tf.expand_dims(y_p,1),[1,a,1,1])-tf.tile(tf.expand_dims(xt,2),[1,1,b,1])
-    dist=(dist[:,:,:,0]**2+dist[:,:,:,1]**2)
-    return dist
+def set_seed(seed: int) -> None:
+    """Set seeds for reproducible runs (as far as the data generator allows)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-def chamfer_loss(A,B):    
-    r=tf.reduce_sum(A*A,2)
-    r=tf.reshape(r,[int(r.shape[0]),int(r.shape[1]),1])
-    r2=tf.reduce_sum(B*B,2)
-    r2=tf.reshape(r2,[int(r.shape[0]),int(r.shape[1]),1])
-    t=(r-2*tf.matmul(A, tf.transpose(B,perm=[0, 2, 1])) + tf.transpose(r2,perm=[0, 2, 1]))
-    return tf.reduce_mean((tf.reduce_min(t, axis=1)+tf.reduce_min(t,axis=2))/2.0)
 
-def Net(aa, yt, x):
-    s=aa.shape[1]
-    with tf.sg_context(name='NNReg', stride=1, act='leaky_relu', bn=True, reuse=tf.AUTO_REUSE): 
-        yt=tf.expand_dims(yt,2)
-        
-        v1=tf.expand_dims(x,2).sg_conv(dim=16, size=(1,1),  name='gen9',pad="SAME",bn=True)        
-        v2=v1.sg_conv(dim=64, size=(1,1),  name='gen1',pad="SAME",bn=True)        
-        v3=v2.sg_conv(dim=128, size=(1,1),  name='gen2',pad="SAME",bn=True) 
-        v4=v3.sg_conv(dim=256, size=(1,1),  name='gen3',pad="SAME",bn=True) 
-        v5=v4.sg_conv(dim=512, size=(1,1),  name='gen4',pad="SAME",bn=True) 
-        v5=tf.tile(tf.expand_dims(tf.reduce_max(v5, axis=1),axis=1),[1,s,1,1])
-        vv5=v5
-        
-        v1=yt.sg_conv(dim=16, size=(1,1),  name='gen99',pad="SAME",bn=True)        
-        v2=v1.sg_conv(dim=64, size=(1,1),  name='gen11',pad="SAME",bn=True)        
-        v3=v2.sg_conv(dim=128, size=(1,1),  name='gen22',pad="SAME",bn=True) 
-        v4=v3.sg_conv(dim=256, size=(1,1),  name='gen33',pad="SAME",bn=True) 
-        v5=v4.sg_conv(dim=512, size=(1,1),  name='gen44',pad="SAME",bn=True) 
-        v5=tf.tile(tf.expand_dims(tf.reduce_max(v5, axis=1),axis=1),[1,s,1,1])
-        
-        ff=tf.concat([tf.expand_dims(aa,2),v5], axis=-1) 
-        ff=tf.concat([ff,vv5], axis=-1) 
-        f1=ff.sg_conv(dim=256, size=(1,1),  name='f1',pad="SAME",bn=True)  
-        f2=f1.sg_conv(dim=128, size=(1,1),  name='f2',pad="SAME",bn=True)  
-        
-        f3=f2.sg_conv(dim=2, size=(1,1),  name='f3',pad="SAME",bn=False, act="linear")  
-        f3=tf.squeeze(f3,axis=2)
-        
-    return f3
+def get_device() -> torch.device:
+    """
+    Resolve the training device and emit a clear log.
+
+    GPU usage can be disabled if CUDA_VISIBLE_DEVICES hides GPUs or if PyTorch
+    is installed without CUDA support. We print the selected device so users
+    can verify that training is actually using the GPU.
+    """
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
+        return device
+    device = torch.device("cpu")
+    print("CUDA not available; using CPU. Check CUDA_VISIBLE_DEVICES and your PyTorch build.")
+    return device
+
+
+class SharedMLP(nn.Module):
+    """
+    Shared MLP implemented with 1x1 convolutions.
+
+    In the original TensorFlow+sugartensor code, the network used sg_conv with
+    kernel size (1, 1) applied to per-point features. A 1x1 Conv1d does the
+    same thing when the data is shaped as (B, C, N).
+    """
+
+    def __init__(self, in_channels: int, channels: list[int]) -> None:
+        super().__init__()
+        layers = []
+        for out_channels in channels:
+            layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=1))
+            layers.append(nn.BatchNorm1d(out_channels))
+            layers.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
+            in_channels = out_channels
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the stacked 1x1 convolutions."""
+        return self.net(x)
+
+
+class PointRegressor(nn.Module):
+    """
+    PyTorch reimplementation of the original TensorFlow CPD-Net.
+
+    The model takes a source point set and a target point set and predicts a
+    per-point displacement for the source. The architecture preserves the two
+    separate MLP branches from the original code (gen* and gen9* blocks), then
+    fuses the point-wise source coordinates with global features from both
+    branches before regressing the displacement vectors.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Target branch (corresponds to gen9/gen1/gen2/gen3/gen4 in TF code).
+        self.target_mlp = SharedMLP(2, [16, 64, 128, 256, 512])
+        # Source branch (corresponds to gen99/gen11/gen22/gen33/gen44 in TF code).
+        self.source_mlp = SharedMLP(2, [16, 64, 128, 256, 512])
+
+        # Fusion head (f1/f2/f3 in TF code).
+        self.fusion = nn.Sequential(
+            nn.Conv1d(2 + 512 + 512, 256, kernel_size=1),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Conv1d(256, 128, kernel_size=1),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Conv1d(128, 2, kernel_size=1),
+        )
+
+    def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            source: (B, N, 2) tensor of source points.
+            target: (B, N, 2) tensor of target points.
+
+        Returns:
+            (B, N, 2) tensor of displacement vectors to apply to source points.
+        """
+        # Convert to (B, C, N) layout for Conv1d layers.
+        source_channels = source.transpose(1, 2)
+        target_channels = target.transpose(1, 2)
+
+        # Extract per-point features for the target branch.
+        target_features = self.target_mlp(target_channels)
+        target_global = torch.max(target_features, dim=2, keepdim=True).values
+        target_global = target_global.expand(-1, -1, target_features.shape[2])
+
+        # Extract per-point features for the source branch.
+        source_features = self.source_mlp(source_channels)
+        source_global = torch.max(source_features, dim=2, keepdim=True).values
+        source_global = source_global.expand(-1, -1, source_features.shape[2])
+
+        # Fuse raw coordinates with global features from both branches.
+        fused = torch.cat([source_channels, source_global, target_global], dim=1)
+        displacement = self.fusion(fused)
+
+        # Return to (B, N, 2) layout.
+        return displacement.transpose(1, 2)
+
+
+def chamfer_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the symmetric Chamfer distance between two point sets.
+
+    This mirrors the TensorFlow implementation in the original repo by
+    calculating pairwise distances, taking the minimum in each direction, and
+    averaging the results.
+    """
+    # pred/target: (B, N, 2)
+    diff = pred.unsqueeze(2) - target.unsqueeze(1)
+    dist = (diff ** 2).sum(dim=-1)
+    min_pred = dist.min(dim=2).values
+    min_target = dist.min(dim=1).values
+    return ((min_pred + min_target) / 2.0).mean()
+
+
+def _ensure_point_shape(points: np.ndarray) -> np.ndarray:
+    """Ensure point set is shaped as (N, 2) for downstream PyTorch code."""
+    if points.shape[0] == 2 and points.shape[1] != 2:
+        return points.T
+    return points
+
+
+class RandomPairDataset(Dataset):
+    """
+    Dataset that returns (source, target) pairs using the original training logic.
+
+    The TensorFlow pipeline built source/target pairs from the same list of
+    synthesized point sets by randomly reordering the sources. We replicate the
+    same idea here by pairing each target with a randomly sampled source.
+    """
+
+    def __init__(self, target_list: list[np.ndarray]) -> None:
+        self.targets = [
+            torch.tensor(_ensure_point_shape(item), dtype=torch.float32)
+            for item in target_list
+        ]
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        target = self.targets[index]
+        source = self.targets[random.randrange(len(self.targets))]
+        return source, target
+
 
 def train():
-    tf.Graph()
-    tf.set_random_seed(888)
+    set_seed(888)
     print("*****************************************")
     print("Training started with random seed: {}".format(111))
     print("Batch started with random seed: {}".format(111))
-    
-    #read data
-    x,y=read_from_tfrecords(tfname,
-                                 ["source","target"], batSize, [[s1,2],[s2,2]])
-    global_step = tf.Variable(1, trainable=False,name='global_step')
-    yp=Net(x,x,y)+x    
-    Loss=chamfer_loss(yp,y)    
 
-    #Learning Rate****************************************************************************
-    lr = tf.train.exponential_decay(learningRate, global_step,
-                                                  batSize, learningRateDecay, staircase=False) 
-    # Optimization Algo************************************************************************
-    train_step = tf.train.AdamOptimizer(learning_rate=lr,
-                                                    beta1=adam_beta1,
-                                                    beta2=adam_beta2
-                                                   ).minimize(Loss,global_step=global_step)
-    
-    saver = tf.train.Saver(max_to_keep=int(maxKeepWeights))
-    init_op = tf.group(tf.global_variables_initializer(),
-                               tf.local_variables_initializer())
-    
-    # Continue Training************************************************************************
-    if len(conWeightPath)>0:
+    device = get_device()
+
+    # Generate synthetic training data using the original LoaderFish pipeline.
+    dataset = LoaderFish.PointRegDataset(
+        total_data=train_num,
+        deform_level=def_level,
+        noise_ratio=0,
+        outlier_ratio=0,
+        outlier_s=False,
+        outlier_t=False,
+        noise_s=False,
+        noise_t=False,
+        missing_points=0,
+        miss_source=False,
+        miss_targ=False,
+        clas=1,
+    )
+
+    train_dataset = RandomPairDataset(dataset.target_list)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batSize,
+        shuffle=True,
+        drop_last=True,
+    )
+
+    model = PointRegressor().to(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=learningRate,
+        betas=(adam_beta1, adam_beta2),
+    )
+
+    # Match TensorFlow's exponential decay schedule.
+    lr_lambda = lambda step: learningRateDecay ** (step / batSize)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    start_step = 1
+    if len(conWeightPath) > 0:
+        checkpoint_path = conWeightPath
         print("Continue Training...")
-        tmp_var_list={}
-        if len(conWeightVar)==0:
-            print("For all variables")
-            globals()['conWeightVar']={''}
-        else:
-            print("Training variables: {}".format(conWeightVar))
-            
-        for j in conWeightVar: 
-            for i in tf.global_variables():
-                if i.name.startswith(j):
-                    tmp_var_list[i.name[:-2]] = i      
-        saver1=tf.train.Saver(tmp_var_list)     
-    
-    # Training**********************************************************************************    
-    with tf.Session() as sess:
-        sess.run(init_op)
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-        # Read Weight******************************
-        if len(conWeightPath)>0:
-            print(conWeightPath)
-            if stepsContinue==-1:            
-                STEPS=sorted([int(i.split("/")[-1].split(".")[1].split("-")[-1]) for i in glob.glob(conWeightPath+"/*meta")])
-                print("hahaha",STEPS)
-                globals()['stepsContinue']=STEPS[-1]
-                
-            wtt=glob.glob(conWeightPath+"/*{}*meta".format(stepsContinue))[0][:-5]
-            print("Reading Weight:{}".format(wtt))
-            saver1.restore(sess,wtt)
-            print('Weight is successfully updated from: {}'.format(wtt))  
-        #*******************************************    
-        stepst = sess.run(global_step)
-        for t in tqdm.tqdm(range(stepst,int(maxStep)+1)):      
-            _= sess.run([train_step]) 
-            if t % saveStep==0:
-                if not os.path.exists(dirSave):
-                    os.makedirs(dirSave)
-                saver.save(sess, dirSave + '/model.ckpt', global_step=t)
-        coord.request_stop()
-        coord.join(threads)   
-################################################################
-os.environ['CUDA_VISIBLE_DEVICES']="6" #change it to the number of gpu. Only single gpu is requried. 
-train_num=20000 # number of sythesized training pairs
-#deformation_list=[0.9,1.2,1.5,2.0]
-deformation_list=[0.4]
-batSize=8
-maxStep=100000 # fixed with learningRate and learningRateDecay
-learningRate=0.001 
-learningRateDecay=0.999
-adam_beta1=0.9 # check adam optimization
-adam_beta2=0.99
-conWeightVar=['NNReg','global_step'] # variables to be loaded
-saveStep=20000 # frequency to save weight
-maxKeepWeights=2000 # how many records to save (for disk)
-stepsContinue=-1  # from which steps continu.
-#For Debug and results printing
-keepProb=0.99999
-# Totally dosen't work if put dropout after max-pool layer. 
-printStep=1000
-s1=91
-s2=91
-clas="fish"
-##############################################################
-for def_level in deformation_list:
-# unmark it if you need to generate your own dataset for training. 
-#     a=LoaderFish.PointRegDataset(total_data=train_num, 
-#              deform_level=def_level,
-#              noise_ratio=0, 
-#              outlier_ratio=0, 
-#              outlier_s=False,
-#                outlier_t=False, 
-#                noise_s=False, 
-#                noise_t=False,
-#              missing_points=0,
-#              miss_source=False,
-#                miss_targ=False,
-#                clas=1)
+        print("Reading Weight:{}".format(checkpoint_path))
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        start_step = checkpoint["step"] + 1
 
-#     write_to_tfrecords({"source":np.asanyarray([i.T for i in a.target_list])[np.random.choice(range(train_num),train_num)],
-#                    "target":np.asanyarray([i.T for i in a.target_list])},"Def_train_{}_{}_{}.tfrecords".format(clas,def_level,train_num))
+    if not os.path.exists(dirSave):
+        os.makedirs(dirSave)
 
-    tfname="Def_train_{}_{}_{}.tfrecords".format(clas,def_level,train_num)
-    dat="Exp1"
-    dirSave="./UnSup-{}/{}_Def_{}_trNum_{}_maxStep_{}".format(clas,
-        dat, def_level,train_num, maxStep)
-    conWeightPath=""
-    train()
+    step = start_step
+    model.train()
+    while step <= maxStep:
+        for source, target in train_loader:
+            if step > maxStep:
+                break
+
+            source = source.to(device)
+            target = target.to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+            displacement = model(source, target)
+            pred = source + displacement
+            loss = chamfer_loss(pred, target)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            if step % printStep == 0:
+                print(f"Step {step} | Loss: {loss.item():.6f}")
+
+            if step % saveStep == 0:
+                checkpoint = {
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "step": step,
+                }
+                torch.save(checkpoint, os.path.join(dirSave, f"model_step_{step}.pt"))
+
+            step += 1
+
+
+if __name__ == "__main__":
+    # Optionally set CUDA_VISIBLE_DEVICES in your shell to select a specific GPU.
+    train_num = 20000  # number of synthesized training pairs
+    deformation_list = [0.4]
+    batSize = 8
+    maxStep = 100000  # fixed with learningRate and learningRateDecay
+    learningRate = 0.001
+    learningRateDecay = 0.999
+    adam_beta1 = 0.9  # check adam optimization
+    adam_beta2 = 0.99
+    saveStep = 20000  # frequency to save weight
+    maxKeepWeights = 2000  # how many records to save (for disk)
+    stepsContinue = -1  # from which steps continue.
+    # For Debug and results printing
+    keepProb = 0.99999
+    printStep = 1000
+    s1 = 91
+    s2 = 91
+    clas = "fish"
+
+    for def_level in deformation_list:
+        dat = "Exp1"
+        dirSave = "./UnSup-{}/{}_Def_{}_trNum_{}_maxStep_{}".format(
+            clas, dat, def_level, train_num, maxStep
+        )
+        conWeightPath = ""
+        train()

@@ -206,8 +206,10 @@ class TpsGridGen(Module):
         # input are the corresponding control points P_i
         batch_size = theta.size()[0]
         # split theta into point coordinates
-        Q_X=theta[:,:self.N,:,:].squeeze(3).cuda()
-        Q_Y=theta[:,self.N:,:,:].squeeze(3).cuda()
+        # Keep all tensors on the same device as theta to support CPU-only runs.
+        device = theta.device
+        Q_X = theta[:, : self.N, :, :].squeeze(3).to(device)
+        Q_Y = theta[:, self.N :, :, :].squeeze(3).to(device)
         
         # get spatial dimensions of points
         points_b = points.size()[0]
@@ -243,9 +245,13 @@ class TpsGridGen(Module):
         else:
             # use expanded P_X,P_Y in batch dimension
             
-            delta_X = points_X_for_summation.cuda()-P_X.expand_as(points_X_for_summation)
+            delta_X = points_X_for_summation.to(device) - P_X.expand_as(
+                points_X_for_summation
+            ).to(device)
 
-            delta_Y = points_Y_for_summation.cuda()-P_Y.expand_as(points_Y_for_summation)
+            delta_Y = points_Y_for_summation.to(device) - P_Y.expand_as(
+                points_Y_for_summation
+            ).to(device)
             
         dist_squared = torch.pow(delta_X,2)+torch.pow(delta_Y,2)
         # U: size [1,H,W,1,N]
@@ -260,15 +266,19 @@ class TpsGridGen(Module):
             points_Y_batch = points_Y_batch.expand((batch_size,)+points_Y_batch.size()[1:])
        
     
-        points_X_prime = A_X[:,:,:,:,0]+ \
-                       torch.mul(A_X[:,:,:,:,1],points_X_batch.cuda()) + \
-                       torch.mul(A_X[:,:,:,:,2],points_Y_batch.cuda()) + \
-                       torch.sum(torch.mul(W_X,U.expand_as(W_X)),4)
+        points_X_prime = (
+            A_X[:, :, :, :, 0]
+            + torch.mul(A_X[:, :, :, :, 1], points_X_batch.to(device))
+            + torch.mul(A_X[:, :, :, :, 2], points_Y_batch.to(device))
+            + torch.sum(torch.mul(W_X, U.expand_as(W_X)), 4)
+        )
                     
-        points_Y_prime = A_Y[:,:,:,:,0]+ \
-                       torch.mul(A_Y[:,:,:,:,1],points_X_batch.cuda()) + \
-                       torch.mul(A_Y[:,:,:,:,2],points_Y_batch.cuda()) + \
-                       torch.sum(torch.mul(W_Y,U.expand_as(W_Y)),4)
+        points_Y_prime = (
+            A_Y[:, :, :, :, 0]
+            + torch.mul(A_Y[:, :, :, :, 1], points_X_batch.to(device))
+            + torch.mul(A_Y[:, :, :, :, 2], points_Y_batch.to(device))
+            + torch.sum(torch.mul(W_Y, U.expand_as(W_Y)), 4)
+        )
 
         res=torch.cat([points_X_prime,points_Y_prime],3)
         
