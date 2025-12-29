@@ -12,9 +12,9 @@ import geotnf.point_tnf
 @dataclass
 class RectangleConfig:
     """Configuration for rectangle point set generation."""
-    rows: int = 6
-    cols: int = 5
-    spacing: float = 100.0
+    rows: int = 4
+    cols: int = 8
+    spacing: float = 20.0
 
 
 def make_rectangle_points(cfg: RectangleConfig) -> np.ndarray:

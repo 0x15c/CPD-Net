@@ -52,7 +52,7 @@ def replace_points_with_noise(points: np.ndarray, num_replace: int, noise_scale:
     return noisy
 
 
-def plot_displacement(base_points: np.ndarray, warped_points: np.ndarray, save_path: str | None) -> None:
+def plot_displacement(base_points: np.ndarray, transformed_points: np.ndarray, warped_points: np.ndarray, save_path: str | None) -> None:
     """Plot displacement vectors from base points to predicted warped points."""
     displacement = warped_points - base_points
     plt.figure(figsize=(6, 6))
@@ -66,8 +66,12 @@ def plot_displacement(base_points: np.ndarray, warped_points: np.ndarray, save_p
         scale=1,
         color="tab:red",
     )
-    plt.scatter(base_points[:, 0], base_points[:, 1], c="tab:blue", label="Noisy Source")
-    plt.scatter(warped_points[:, 0], warped_points[:, 1], c="tab:orange", label="Noisy Target")
+    plt.scatter(base_points[:, 0], base_points[:, 1],
+                c="tab:blue", label="Noisy Source")
+    plt.scatter(warped_points[:, 0], warped_points[:, 1],
+                c="tab:orange", label="Predicted Target")
+    plt.scatter(transformed_points[:, 0], transformed_points[:,
+                1], c="tab:green", label="Transformed Target")
     plt.legend()
     plt.gca().set_aspect("equal", adjustable="box")
     plt.title("Rectangle TPS displacement vectors with noise")
@@ -88,18 +92,27 @@ def load_model(checkpoint_path: str, device: torch.device) -> PointRegressor:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Visualize TPS displacement on noisy rectangle grid.")
-    parser.add_argument("--rows", type=int, default=6, help="Number of rows in rectangle grid.")
-    parser.add_argument("--cols", type=int, default=5, help="Number of columns in rectangle grid.")
-    parser.add_argument("--spacing", type=float, default=100.0, help="Grid spacing in units.")
-    parser.add_argument("--deform", type=float, default=0.4, help="TPS deformation level.")
-    parser.add_argument("--replace-count", type=int, default=3, help="Points replaced by noise.")
-    parser.add_argument("--noise-scale", type=float, default=0.1, help="Noise scale relative to span.")
-    parser.add_argument("--save", type=str, default=None, help="Optional path to save plot.")
+    parser = argparse.ArgumentParser(
+        description="Visualize TPS displacement on noisy rectangle grid.")
+    parser.add_argument("--rows", type=int, default=4,
+                        help="Number of rows in rectangle grid.")
+    parser.add_argument("--cols", type=int, default=8,
+                        help="Number of columns in rectangle grid.")
+    parser.add_argument("--spacing", type=float,
+                        default=0.15, help="Grid spacing in units.")
+    parser.add_argument("--deform", type=float, default=0.1,
+                        help="TPS deformation level.")
+    parser.add_argument("--replace-count", type=int,
+                        default=0, help="Points replaced by noise.")
+    parser.add_argument("--noise-scale", type=float,
+                        default=0.2, help="Noise scale relative to span.")
+    parser.add_argument("--save", type=str, default=None,
+                        help="Optional path to save plot.")
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
+        default= "rect_checkpoints/rect_noise_step_6000.pt",
+        # required=True,
         help="Path to a trained model checkpoint (model_state).",
     )
     return parser.parse_args()
@@ -110,15 +123,21 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg = RectangleConfig(rows=args.rows, cols=args.cols, spacing=args.spacing)
     base = make_rectangle_points(cfg)
-    warped = apply_random_tps(base, deform_level=args.deform, use_cuda=torch.cuda.is_available())
-    noisy_base = replace_points_with_noise(base, args.replace_count, args.noise_scale)
-    noisy_warped = replace_points_with_noise(warped, args.replace_count, args.noise_scale)
+    warped = apply_random_tps(
+        base, deform_level=args.deform, use_cuda=torch.cuda.is_available())
+    noisy_base = replace_points_with_noise(
+        base, args.replace_count, args.noise_scale)
+    noisy_warped = replace_points_with_noise(
+        warped, args.replace_count, args.noise_scale)
 
     model = load_model(args.checkpoint, device)
-    source_tensor = torch.tensor(noisy_base, dtype=torch.float32, device=device).unsqueeze(0)
-    target_tensor = torch.tensor(noisy_warped, dtype=torch.float32, device=device).unsqueeze(0)
+    source_tensor = torch.tensor(
+        noisy_base, dtype=torch.float32, device=device).unsqueeze(0)
+    target_tensor = torch.tensor(
+        noisy_warped, dtype=torch.float32, device=device).unsqueeze(0)
     with torch.no_grad():
-        predicted_displacement = model(source_tensor, target_tensor).cpu().numpy()[0]
+        predicted_displacement = model(
+            source_tensor, target_tensor).cpu().numpy()[0]
     predicted_points = noisy_base + predicted_displacement
 
-    plot_displacement(noisy_base, predicted_points, args.save)
+    plot_displacement(noisy_base, noisy_warped, predicted_points, args.save)
